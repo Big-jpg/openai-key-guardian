@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+/* === Theme tokens (work with our components) === */
+:root {
+  --bg: #0b0c10;
+  --bg-elev: #121317;
+  --card: #161820;
+  --muted: #8b90a0;
+  --text: #e8eaf0;
+  --text-inv: #0b0c10;
+  --primary: #7c5cff;
+  --primary-600: #6a4df0;
+  --ring: #2b2f3a;
+  --border: #242735;
+  --success: #1fd286;
+  --danger: #ef4444;
+}
+
+[data-theme="light"] {
+  --bg: #f7f8fb;
+  --bg-elev: #ffffff;
+  --card: #ffffff;
+  --muted: #6b7280;
+  --text: #0b0c10;
+  --text-inv: #ffffff;
+  --primary: #4f46e5;
+  --primary-600: #4338ca;
+  --ring: #e6e8ef;
+  --border: #e6e8ef;
+  --success: #10b981;
+  --danger: #ef4444;
+}
+
+/* Page background / typography */
+html, body {
+  min-height: 100%;
+  background:
+    radial-gradient(1200px 600px at 10% -20%, rgba(124, 92, 255, .16), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(31, 210, 134, .12), transparent 60%),
+    var(--bg);
+  color: var(--text);
+}
+
+/* Cards / inputs / table helpers used by the components I gave you */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  border-radius: 1.5rem;
+}
+.input {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 16px;
+  padding: .6rem .8rem;
+}
+.input::placeholder { color: var(--muted); }
+
+.table { border-spacing: 0; width: 100%; }
+.table th, .table td { border-bottom: 1px solid var(--border); padding: .65rem .75rem; }
+.table thead th { position: sticky; top: 0; background: var(--bg-elev); z-index: 1; }
+.table tbody tr:hover td { background: rgba(124, 92, 255, .06); }
+
+.badge { display:inline-block; padding:.25rem .6rem; border-radius:9999px; font-size:.75rem;
+  border:1px solid var(--border); background:var(--bg-elev); color:var(--muted); }

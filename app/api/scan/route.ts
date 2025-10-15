@@ -9,85 +9,106 @@ import path from "path";
 import { runScanOnce } from "@/src/scan";
 import { readMetrics } from "@/src/store/fsStore";
 
-// Writable base dir (matches fsStore defaults)
+// Use the same base dir as fsStore
 const DATA_DIR =
   process.env.DATA_DIR ||
   (process.env.VERCEL ? "/tmp/openai-key-guardian" : path.join(process.cwd(), ".data"));
 
 const LOCK_PATH = path.join(DATA_DIR, "scan.lock");
+const LOCK_TTL_MS = Number(process.env.SCAN_LOCK_TTL_MS || 15 * 60_000); // 15 min default
 
-// Acquire an exclusive lock by creating the file with 'wx'
-async function acquireLock(): Promise<boolean> {
+function nowISO() { return new Date().toISOString(); }
+
+function readLock(): { startedAt: string } | null {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.openSync(LOCK_PATH, "wx"); // throws if exists
-    return true;
-  } catch (e: any) {
-    if (e?.code === "EEXIST") return false;
-    // If DATA_DIR didn't exist and mkdir races, try once more
-    if (e?.code === "ENOENT") {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-      try {
-        fs.openSync(LOCK_PATH, "wx");
-        return true;
-      } catch (e2: any) {
-        if (e2?.code === "EEXIST") return false;
-        throw e2;
-      }
-    }
-    throw e;
+    const txt = fs.readFileSync(LOCK_PATH, "utf8");
+    return JSON.parse(txt);
+  } catch {
+    return null;
   }
+}
+
+function lockIsStale(): boolean {
+  try {
+    const stat = fs.statSync(LOCK_PATH);
+    const age = Date.now() - stat.mtimeMs;
+    if (age > LOCK_TTL_MS) return true;
+    // also check JSON body if present
+    const meta = readLock();
+    if (meta?.startedAt) {
+      const t = Date.parse(meta.startedAt);
+      if (!Number.isNaN(t) && Date.now() - t > LOCK_TTL_MS) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function writeLock() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(LOCK_PATH, JSON.stringify({ startedAt: nowISO() }), { flag: "wx" });
 }
 
 function releaseLock() {
-  try {
-    if (fs.existsSync(LOCK_PATH)) fs.unlinkSync(LOCK_PATH);
-  } catch {
-    // ignore
-  }
+  try { fs.unlinkSync(LOCK_PATH); } catch { /* ignore */ }
 }
 
-export async function POST(_req: NextRequest) {
-  // Basic env sanity
-  if (!process.env.GH_TOKEN) {
-    return new Response(
-      JSON.stringify({ ok: false, message: "GH_TOKEN is not set on the server" }),
-      { status: 400, headers: { "content-type": "application/json" } }
-    );
-  }
-
-  const locked = await acquireLock();
-  if (!locked) {
-    return new Response(
-      JSON.stringify({ ok: false, message: "Scan already running" }),
-      { status: 409, headers: { "content-type": "application/json" } }
-    );
-  }
-
-  const startedAt = new Date().toISOString();
-  try {
-    await runScanOnce(); // does the GitHub search + writes .data files
-    const metrics = readMetrics();
-    return new Response(
-      JSON.stringify({ ok: true, startedAt, finishedAt: new Date().toISOString(), metrics }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
-  } catch (err: any) {
-    console.error("scan failed:", err?.message || err);
-    return new Response(
-      JSON.stringify({ ok: false, error: String(err?.message || err) }),
-      { status: 500, headers: { "content-type": "application/json" } }
-    );
-  } finally {
-    releaseLock();
-  }
-}
-
-// Optional: allow the UI to poll current status
 export async function GET() {
-  const running = fs.existsSync(LOCK_PATH);
+  const running = fs.existsSync(LOCK_PATH) && !lockIsStale();
   const metrics = readMetrics();
   return new Response(JSON.stringify({ running, metrics }), {
     headers: { "content-type": "application/json" },
   });
+}
+
+export async function POST(req: NextRequest) {
+  if (!process.env.GH_TOKEN) {
+    return new Response(JSON.stringify({ ok: false, message: "GH_TOKEN is not set" }),
+      { status: 400, headers: { "content-type": "application/json" } });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const force = searchParams.get("force") === "true";
+
+  // Handle stale or force
+  if (fs.existsSync(LOCK_PATH)) {
+    if (force || lockIsStale()) {
+      releaseLock(); // clear stale/forced
+    }
+  }
+
+  try {
+    writeLock(); // atomic via 'wx'; throws if already exists
+  } catch (e: any) {
+    if (e?.code === "EEXIST") {
+      return new Response(JSON.stringify({ ok: false, message: "Scan already running" }),
+        { status: 409, headers: { "content-type": "application/json" } });
+    }
+    // Maybe DATA_DIR race, try once more
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    try {
+      writeLock();
+    } catch (e2: any) {
+      if (e2?.code === "EEXIST") {
+        return new Response(JSON.stringify({ ok: false, message: "Scan already running" }),
+          { status: 409, headers: { "content-type": "application/json" } });
+      }
+      throw e2;
+    }
+  }
+
+  const startedAt = nowISO();
+  try {
+    await runScanOnce();
+    const metrics = readMetrics();
+    return new Response(JSON.stringify({ ok: true, startedAt, finishedAt: nowISO(), metrics }),
+      { status: 200, headers: { "content-type": "application/json" } });
+  } catch (err: any) {
+    console.error("scan failed:", err?.message || err);
+    return new Response(JSON.stringify({ ok: false, error: String(err?.message || err) }),
+      { status: 500, headers: { "content-type": "application/json" } });
+  } finally {
+    releaseLock();
+  }
 }

@@ -16,7 +16,17 @@ export default function Home() {
     setMsg(null);
     setRunning(true);
     try {
+
       const res = await fetch("/api/scan", { method: "POST" });
+      if (res.status === 409) {
+        // retry once with force
+        const res2 = await fetch("/api/scan?force=true", { method: "POST" });
+        const body2 = await res2.json();
+        setMsg(res2.ok ? "Scan started (forced)" : (body2?.message || "Scan busy"));
+        if (res2.ok) mutate("/api/metrics");
+        setRunning(false);
+        return;
+      }
       const body = await res.json();
       if (!res.ok) {
         setMsg(body?.message || body?.error || "Scan failed");

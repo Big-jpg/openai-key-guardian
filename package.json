@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "pnpm dedupe",
     "build": "next build",
     "start": "next start",
     "scan": "tsx src/scan.ts",
@@ -12,13 +13,18 @@
   },
   "dependencies": {
     "@octokit/core": "^7.0.5",
-    "@octokit/rest": "^21.1.1",
-    "@octokit/plugin-throttling": "^11.0.2",
-    "@octokit/plugin-retry": "^8.0.2",
+    "@octokit/plugin-throttling": "^11.0.1",
+    "@octokit/plugin-retry": "^7.1.3",
     "next": "14.2.33",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "swr": "2.3.6"
+  },
+  "pnpm": {
+    "overrides": {
+      "@octokit/core": "^7.0.5",
+      "@octokit/types": "^15.0.0"
+    }
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

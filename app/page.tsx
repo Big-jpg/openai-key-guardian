@@ -82,9 +82,14 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-3">
           <ThemeToggle />
-          <Button variant="secondary" onClick={() => mutate("/api/metrics")}>Refresh</Button>
-          <Button onClick={() => runScan()} disabled={running}>{running ? "Scanning…" : "Run scan"}</Button>
+          <Button variant="secondary" onClick={() => mutate("/api/metrics")}>
+            Refresh
+          </Button>
+          <Button onClick={() => runScan()} loading={running}>
+            Run scan
+          </Button>
         </div>
+
       </header>
 
       {msg && <div className="text-sm p-3 card rounded-2xl">{msg}</div>}
@@ -114,7 +119,7 @@ export default function Home() {
           <div className="space-y-2">
             <label className="text-sm text-[var(--muted)]">Mode</label>
             <div className="flex gap-2">
-              {(["safe","notify","remediate"] as const).map(m => (
+              {(["safe", "notify", "remediate"] as const).map(m => (
                 <Button
                   key={m}
                   variant={localCfg.RUN_MODE === m ? "primary" : "secondary"}
@@ -168,12 +173,12 @@ export default function Home() {
           <div className="flex items-center gap-2">
             <span className="badge">Rows: {allRecent.length}</span>
             <select className="input" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
-              {[25,50,100,200].map(n => <option key={n} value={n}>{n}/page</option>)}
+              {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n}/page</option>)}
             </select>
             <div className="flex items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={() => setPage(p => Math.max(1, p-1))}>Prev</Button>
+              <Button variant="secondary" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))}>Prev</Button>
               <div className="text-sm text-[var(--muted)]">Page {page} / {totalPages}</div>
-              <Button variant="secondary" size="sm" onClick={() => setPage(p => Math.min(totalPages, p+1))}>Next</Button>
+              <Button variant="secondary" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))}>Next</Button>
             </div>
           </div>
         </div>

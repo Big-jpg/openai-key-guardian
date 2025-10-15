@@ -1,10 +1,23 @@
 // app/api/metrics/route.ts
-import { NextRequest } from "next/server";
-import { readMetrics, readRecent } from "@/src/store/fsStore";
+import { NextResponse } from "next/server";
+import { readRecent, readMetrics } from "@/src/store/fsStore";
 
-export async function GET(_req: NextRequest) {
-  const metrics = readMetrics();
-  const recent = readRecent(25);
-  return new Response(JSON.stringify({ metrics, recent }), { headers: { "content-type": "application/json" } });
+export const dynamic = "force-dynamic"; // ensure fresh reads from file store
+export const runtime = "nodejs";        // not edge
+
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const limitParam = url.searchParams.get("limit");
+    const limit = Number.isFinite(Number(limitParam)) ? Number(limitParam) : 100;
+    // guardrails
+    const effectiveLimit = Math.min(Math.max(1, limit), 5000);
+
+    const metrics = readMetrics();
+    const recent = readRecent(effectiveLimit);
+
+    return NextResponse.json({ metrics, recent });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "metrics failed" }, { status: 500 });
+  }
 }
-

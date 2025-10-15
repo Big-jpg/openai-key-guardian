@@ -1,6 +1,6 @@
 "use client";
 
-import useSWR, { mutate } from "swr";
+import useSWR, { mutate as globalMutate } from "swr";
 import { useEffect, useMemo, useState } from "react";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -15,9 +15,20 @@ type Config = {
   EXCLUSIONS?: string;
 };
 
+type Banner = { kind: "success" | "info" | "warn"; text: string } | null;
+
 export default function Home() {
-  // data
-  const { data: metricsData } = useSWR("/api/metrics", fetcher, {
+  /** -------------------------
+   * Pagination-aware metrics fetch
+   * -------------------------- */
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  // ask the backend for enough rows to render this page stably
+  const neededRows = Math.max(1, page * pageSize);
+  const metricsKey = `/api/metrics?limit=${neededRows}`;
+
+  const { data: metricsData } = useSWR(metricsKey, fetcher, {
     refreshInterval: 4000,
   });
   const { data: cfgData, mutate: refreshCfg } = useSWR("/api/config", fetcher);
@@ -26,43 +37,81 @@ export default function Home() {
   const remediated = metricsData?.metrics?.remediated ?? 0;
   const allRecent: any[] = metricsData?.recent ?? [];
 
-  // pagination (client side)
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
   const totalPages = Math.max(1, Math.ceil(allRecent.length / pageSize));
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [totalPages, page]);
+
   const recent = useMemo(
     () => allRecent.slice((page - 1) * pageSize, page * pageSize),
     [allRecent, page, pageSize]
   );
 
-  // local ui state
+  /** -------------------------
+   * Local UI state
+   * -------------------------- */
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [banner, setBanner] = useState<Banner>(null);
 
-  // config
+  /** -------------------------
+   * Config editing
+   * -------------------------- */
   const serverCfg: Config = useMemo(() => cfgData?.config ?? {}, [cfgData]);
   const [localCfg, setLocalCfg] = useState<Config>({});
   useEffect(() => setLocalCfg(serverCfg), [serverCfg]);
 
-  // actions
+  /** -------------------------
+   * Actions
+   * -------------------------- */
   async function runScan(force = false) {
-    setMsg(null);
+    // clear banner, we’re (re)starting
+    setBanner(null);
     setRunning(true);
+
     try {
       const url = force ? "/api/scan?force=true" : "/api/scan";
       const res = await fetch(url, { method: "POST" });
-      if (!res.ok && res.status === 409 && !force) return runScan(true);
-      const body = await res.json().catch(() => ({}));
-      setMsg(res.ok ? "Scan completed." : body?.message || body?.error || "Scan failed");
-      if (res.ok) mutate("/api/metrics");
+
+      // Common “already running” status from server — treat as OK/in-progress
+      if (res.status === 409) {
+        setBanner({ kind: "info", text: "Scan is already running — streaming results." });
+        // keep polling
+        return;
+      }
+
+      // Background worker accepted — results will come via metrics polling
+      if (res.status === 202) {
+        setBanner({ kind: "success", text: "Scan started. Results will appear as they’re found." });
+        return;
+      }
+
+      // Regular success
+      if (res.ok) {
+        setBanner({ kind: "success", text: "Scan started. Watching for results…" });
+        // nudge SWR once right away
+        globalMutate(metricsKey);
+        return;
+      }
+
+      // Other non-OK cases -> show message but don’t panic if a scan is already running
+      let body: any = {};
+      try {
+        body = await res.json();
+      } catch {}
+      setBanner({
+        kind: "warn",
+        text: body?.message || body?.error || "Could not start scan. If a prior scan is running, results will continue to update.",
+      });
     } catch (e: any) {
-      setMsg(e?.message || "Network error");
+      setBanner({
+        kind: "warn",
+        text: e?.message || "Network error. If a scan is already in progress, results will continue to update.",
+      });
     } finally {
-      setRunning(false);
+      // We don’t know true backend state; keep UI responsive by clearing spinner shortly after.
+      // Results continue streaming via metrics polling.
+      setTimeout(() => setRunning(false), 800);
     }
   }
 
@@ -74,9 +123,13 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(localCfg),
       });
-      const body = await res.json();
-      setMsg(res.ok ? "Configuration saved." : body?.message || "Failed to save config");
-      if (res.ok) refreshCfg();
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setBanner({ kind: "success", text: "Configuration saved." });
+        refreshCfg();
+      } else {
+        setBanner({ kind: "warn", text: body?.message || "Failed to save config" });
+      }
     } finally {
       setSaving(false);
     }
@@ -95,7 +148,7 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => mutate("/api/metrics")}
+              onClick={() => globalMutate(metricsKey)}
               className="rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm hover:bg-zinc-800 active:scale-[0.98] transition"
             >
               Refresh
@@ -115,10 +168,17 @@ export default function Home() {
       </div>
 
       <div className="mx-auto max-w-7xl px-6 py-8 space-y-6">
-        {/* Inline message */}
-        {msg && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm">
-            {msg}
+        {/* Inline banner */}
+        {banner && (
+          <div
+            className={[
+              "rounded-xl border px-4 py-3 text-sm",
+              banner.kind === "success" && "border-emerald-700 bg-emerald-900/40",
+              banner.kind === "info" && "border-sky-700 bg-sky-900/40",
+              banner.kind === "warn" && "border-amber-700 bg-amber-900/40",
+            ].join(" ")}
+          >
+            {banner.text}
           </div>
         )}
 
@@ -240,7 +300,7 @@ export default function Home() {
                     })
                   }
                   min={10}
-                  max={100}
+                  max={200}
                 />
               </div>
               <div>
@@ -292,7 +352,10 @@ export default function Home() {
               <select
                 className="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
                 value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value))}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(1); // reset to first page when page size changes
+                }}
               >
                 {[25, 50, 100, 200].map((n) => (
                   <option key={n} value={n}>
@@ -342,7 +405,7 @@ export default function Home() {
                 ) : (
                   recent.map((r, i) => (
                     <tr
-                      key={i}
+                      key={`${r.repo}-${r.path}-${r.lineNumber}-${i}`}
                       className="border-t border-zinc-800 hover:bg-zinc-800/60 transition"
                     >
                       <td className="px-3 py-2">{r.repo}</td>

@@ -1,10 +1,15 @@
 // app/api/scan/route.ts
 // Node runtime is required (we do fs + network)
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 import { NextRequest } from "next/server";
 import { runScanOnce } from "@/src/scan";
 import { readMetrics } from "@/src/store/fsStore";
+
+
+
 
 // naive in-process lock to avoid concurrent scans
 const g = globalThis as any;

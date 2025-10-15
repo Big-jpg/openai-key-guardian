@@ -26,11 +26,11 @@ type Config = {
 
 export default function Home() {
   /** ---------- SETTINGS / DATA ---------- **/
-  // Auto-refresh toggle (stops the “constant calls” when off)
+  // Toggle to stop the periodic /api/metrics polling
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  // Pull a larger batch so the pagination feels good; UI slices locally.
-  const METRICS_LIMIT = 500; // tune if you want
+  // Pull a large recent set from the API; UI slices locally
+  const METRICS_LIMIT = 500;
   const { data: metricsData } = useSWR(
     `/api/metrics?limit=${METRICS_LIMIT}`,
     fetcher,
@@ -42,7 +42,7 @@ export default function Home() {
   const remediated = metricsData?.metrics?.remediated ?? 0;
   const allRecentRaw: Detection[] = metricsData?.recent ?? [];
 
-  // Sort newest first (uses detectedAt if present; falls back to array order)
+  // Sort newest first by detectedAt when present
   const allRecent = useMemo<Detection[]>(() => {
     const copy = [...allRecentRaw];
     copy.sort((a, b) => {
@@ -55,7 +55,7 @@ export default function Home() {
 
   /** ---------- PAGINATION (client-side) ---------- **/
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(200); // show a lot; table section has its own scroll
+  const [pageSize, setPageSize] = useState(200);
   const totalPages = Math.max(1, Math.ceil(allRecent.length / pageSize));
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -70,7 +70,7 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // Make POST /api/scan cancellable via AbortController
+  // Make POST /api/scan cancellable
   const scanAbortRef = useRef<AbortController | null>(null);
 
   /** ---------- CONFIG ---------- **/
@@ -83,28 +83,21 @@ export default function Home() {
     setMsg(null);
     setRunning(true);
     try {
-      if (scanAbortRef.current) {
-        // clean any old controller
-        scanAbortRef.current.abort();
-      }
+      if (scanAbortRef.current) scanAbortRef.current.abort();
       const controller = new AbortController();
       scanAbortRef.current = controller;
 
       const url = force ? "/api/scan?force=true" : "/api/scan";
       const res = await fetch(url, { method: "POST", signal: controller.signal });
       if (!res.ok && res.status === 409 && !force) {
-        // in-progress => force re-run once
+        // if another run is in flight, retry once with force
         return runScan(true);
       }
       const body = await res.json().catch(() => ({}));
       setMsg(res.ok ? "Scan completed." : body?.message || body?.error || "Scan failed");
       if (res.ok) mutate(`/api/metrics?limit=${METRICS_LIMIT}`);
     } catch (e: any) {
-      if (e?.name === "AbortError") {
-        setMsg("Scan cancelled.");
-      } else {
-        setMsg(e?.message || "Network error");
-      }
+      setMsg(e?.name === "AbortError" ? "Scan cancelled." : e?.message || "Network error");
     } finally {
       setRunning(false);
       scanAbortRef.current = null;
@@ -132,6 +125,32 @@ export default function Home() {
       if (res.ok) refreshCfg();
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function dropRepo(repo: string) {
+    if (!confirm(`Drop all recent detections for ${repo}?`)) return;
+    try {
+      const res = await fetch(`/api/detections?repo=${encodeURIComponent(repo)}`, {
+        method: "DELETE",
+      });
+      const body = await res.json();
+      setMsg(res.ok ? `Dropped ${body.removed ?? 0} detection(s) for ${repo}.` : body?.error || "Failed");
+      if (res.ok) mutate(`/api/metrics?limit=${METRICS_LIMIT}`);
+    } catch (e: any) {
+      setMsg(e?.message || "Network error");
+    }
+  }
+
+  async function clearAllDetections() {
+    if (!confirm("Clear ALL recent detections? This cannot be undone.")) return;
+    try {
+      const res = await fetch(`/api/detections`, { method: "DELETE" });
+      const body = await res.json();
+      setMsg(res.ok ? "All detections cleared." : body?.error || "Failed");
+      if (res.ok) mutate(`/api/metrics?limit=${METRICS_LIMIT}`);
+    } catch (e: any) {
+      setMsg(e?.message || "Network error");
     }
   }
 
@@ -374,6 +393,15 @@ export default function Home() {
                 ))}
               </select>
 
+              {/* Clear all detections */}
+              <button
+                onClick={clearAllDetections}
+                className="rounded-lg border border-rose-600 bg-rose-600/90 px-3 py-2 text-sm text-white hover:bg-rose-500 active:scale-[0.98] transition"
+                title="Clear all recent detections"
+              >
+                Clear all
+              </button>
+
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
@@ -417,7 +445,7 @@ export default function Home() {
                 ) : (
                   recent.map((r, i) => (
                     <tr
-                      key={i}
+                      key={`${r.repo}-${r.path}-${r.lineNumber}-${i}`}
                       className="border-t border-zinc-800 hover:bg-zinc-800/60 transition"
                     >
                       <td className="px-3 py-2">{r.repo}</td>
@@ -425,19 +453,26 @@ export default function Home() {
                       <td className="px-3 py-2">{r.lineNumber}</td>
                       <td className="px-3 py-2 font-mono">{r.redacted}</td>
                       <td className="px-3 py-2 whitespace-nowrap">
-                        {r.detectedAt
-                          ? new Date(r.detectedAt).toLocaleString()
-                          : "—"}
+                        {r.detectedAt ? new Date(r.detectedAt).toLocaleString() : "—"}
                       </td>
                       <td className="px-3 py-2">
-                        <a
-                          className="text-indigo-400 hover:underline"
-                          href={r.url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          view
-                        </a>
+                        <div className="flex items-center gap-3">
+                          <a
+                            className="text-indigo-400 hover:underline"
+                            href={r.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            view
+                          </a>
+                          <button
+                            onClick={() => dropRepo(r.repo)}
+                            className="text-rose-400 hover:underline"
+                            title={`Drop all detections for ${r.repo}`}
+                          >
+                            drop
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))

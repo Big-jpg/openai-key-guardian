@@ -36,8 +36,8 @@ function ensureDirs() {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-  } catch (e) {
-    // If another concurrent invocation created it, ignore EEXIST
+  } catch {
+    // ignore if a concurrent creator raced us
   }
 
   if (!fs.existsSync(DETECTIONS)) {
@@ -62,6 +62,51 @@ export function appendDetection(d: Detection) {
   writeMetrics(m);
 }
 
+export function dropDetectionsByRepo(repo: string) {
+  ensureDirs();
+  if (!fs.existsSync(DETECTIONS)) return { kept: 0, removed: 0 };
+
+  const lines = fs.readFileSync(DETECTIONS, "utf8").split(/\n+/).filter(Boolean);
+  const kept: string[] = [];
+  let removed = 0;
+
+  for (const l of lines) {
+    try {
+      const d = JSON.parse(l);
+      if (d?.repo === repo) {
+        removed += 1;
+      } else {
+        kept.push(l);
+      }
+    } catch {
+      // if parsing fails, keep the line to avoid data loss
+      kept.push(l);
+    }
+  }
+
+  fs.writeFileSync(DETECTIONS, kept.length ? kept.join("\n") + "\n" : "");
+
+  // update metrics to match file
+  const m = readMetrics();
+  m.detected = kept.length;
+  m.updatedAt = new Date().toISOString();
+  writeMetrics(m);
+
+  return { kept: kept.length, removed };
+}
+
+export function clearAllDetections(resetMetrics = true) {
+  ensureDirs();
+  fs.writeFileSync(DETECTIONS, "");
+  if (resetMetrics) {
+    const m = readMetrics();
+    m.detected = 0;
+    m.updatedAt = new Date().toISOString();
+    writeMetrics(m);
+  }
+  return { kept: 0, removed: 0 };
+}
+
 export function readRecent(limit = 100): Detection[] {
   ensureDirs();
   const fileContent = (fs.existsSync(DETECTIONS) ? fs.readFileSync(DETECTIONS, "utf8") : "").trim();
@@ -75,7 +120,6 @@ export function readMetrics(): Metrics {
   const content = fs.existsSync(METRICS) ? fs.readFileSync(METRICS, "utf8") : "{}";
   try {
     const parsed = JSON.parse(content);
-    // backfill if partial
     return {
       detected: parsed.detected ?? 0,
       remediated: parsed.remediated ?? 0,
@@ -88,7 +132,7 @@ export function readMetrics(): Metrics {
 }
 
 export function writeMetrics(m: Metrics) {
-  ensureDirs(); // only ensures dirs/files; no recursion
+  ensureDirs(); // only ensures dirs/files; no recursion into write
   fs.writeFileSync(METRICS, JSON.stringify(m, null, 2));
 }
 

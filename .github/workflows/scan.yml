@@ -1,0 +1,33 @@
+name: guardian-scan
+on:
+  schedule:
+    - cron: '17 * * * *'  # hourly at :17
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Run SAFE scan (no writes)
+        env:
+          GH_TOKEN: ${{ secrets.SCAN_BOT_TOKEN }}
+          RUN_MODE: safe
+          SEARCH_QUERY: OPENAI_API_KEY=sk-proj
+          RESULTS_PER_PAGE: 50
+          MIN_LINE_LENGTH: 80
+        run: |
+          node --version
+          npx tsx src/scan.ts
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardian-artifacts
+          path: ./.data
+

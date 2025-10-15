@@ -1,0 +1,30 @@
+{
+  "name": "openai-key-guardian",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "scan": "tsx src/scan.ts",
+    "remediate": "tsx src/remediate.ts"
+  },
+  "dependencies": {
+    "@octokit/plugin-retry": "^6.0.1",
+    "@octokit/plugin-throttling": "^8.1.2",
+    "@octokit/rest": "^21.0.2",
+    "next": "^14.2.33",
+    "pnpm": "^10.18.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "swr": "^2.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}

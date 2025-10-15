@@ -1,0 +1,7 @@
+{
+  "metrics": { "detected": 12, "remediated": 3, "updatedAt": "2025-10-14T06:00:00Z" },
+  "recent": [
+    {"repo":"user/repo","path":".env","lineNumber":1,"redacted":"OPENAI_API_KEY=[REDACTED-EXPOSED-KEY]","url":"https://github.com/...","detectedAt":"2025-10-14T05:58:00Z"}
+  ]
+}
+

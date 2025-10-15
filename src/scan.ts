@@ -1,12 +1,12 @@
 // src/scan.ts
 import { getOctokit } from "./github";
-import { RESULTS_PER_PAGE, SEARCH_QUERY, MIN_LINE_LENGTH, KEY_LINE_REGEX, IGNORE_LINE_REGEXES, EXCLUSIONS } from "./policy";
+import { getPolicy } from "./policy";
 import { appendDetection } from "./store/fsStore";
 
-function looksLikeValidKeyLine(line: string) {
-  if (!line || line.length < MIN_LINE_LENGTH) return false;
-  if (!KEY_LINE_REGEX.test(line)) return false;
-  return !IGNORE_LINE_REGEXES.some(rx => rx.test(line));
+function looksLikeValidKeyLine(line: string, minLen: number, keyRx: RegExp, ignore: RegExp[]) {
+  if (!line || line.length < minLen) return false;
+  if (!keyRx.test(line)) return false;
+  return !ignore.some(rx => rx.test(line));
 }
 
 async function fetchRawFile(octokit: ReturnType<typeof getOctokit>, owner: string, repo: string, path: string): Promise<string> {
@@ -18,9 +18,9 @@ async function fetchRawFile(octokit: ReturnType<typeof getOctokit>, owner: strin
 }
 
 export async function runScanOnce() {
+  const { RESULTS_PER_PAGE, SEARCH_QUERY, MIN_LINE_LENGTH, KEY_LINE_REGEX, IGNORE_LINE_REGEXES, EXCLUSIONS } = getPolicy();
   const octokit = getOctokit();
   let page = 1;
-  let totalProcessed = 0;
 
   while (true) {
     const rsp = await octokit.request("GET /search/code", {
@@ -40,28 +40,20 @@ export async function runScanOnce() {
         const lines = content.split(/\r?\n/);
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (line.includes("OPENAI_API_KEY") && looksLikeValidKeyLine(line)) {
+          if (line.includes("OPENAI_API_KEY") && looksLikeValidKeyLine(line, MIN_LINE_LENGTH, KEY_LINE_REGEX, IGNORE_LINE_REGEXES)) {
             const redacted = line.replace(/(OPENAI_API_KEY\s*[=:]\s*)sk-(?:proj-)?[A-Za-z0-9_\-]{8,}/, "$1[REDACTED-EXPOSED-KEY]");
-            appendDetection({
-              repo: full,
-              path: item.path,
-              url: item.html_url,
-              lineNumber: i + 1,
-              redacted,
-              detectedAt: new Date().toISOString()
-            });
-            break; // one hit per file is enough
+            appendDetection({ repo: full, path: item.path, url: item.html_url, lineNumber: i + 1, redacted, detectedAt: new Date().toISOString() });
+            break;
           }
         }
       } catch (e: unknown) {
         const err = e as { status?: number; message?: string };
         console.warn("fetch failed", item.html_url, err?.status ?? err?.message);
       }
-      totalProcessed++;
       await new Promise(r => setTimeout(r, 500));
     }
 
-    if (page * RESULTS_PER_PAGE >= Math.min(1000, rsp.data.total_count ?? 0)) break; // API caps
+    if (page * RESULTS_PER_PAGE >= Math.min(1000, rsp.data.total_count ?? 0)) break;
     page++;
     await new Promise(r => setTimeout(r, 1000));
   }

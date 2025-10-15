@@ -1,70 +1,108 @@
 // src/remediate.ts
-import { getOctokit } from "./github";
-import { RUN_MODE, ALLOW_WRITES, COOLDOWN_DAYS } from "./policy";
+import { getPolicy } from "./policy";
 import { readRecent, incrementRemediated, Detection } from "./store/fsStore";
 
-const ISSUE_TITLE = "Security: Exposed API key detected — please rotate immediately";
+/**
+ * Minimal GitHub REST helper using fetch.
+ * Requires GH_TOKEN in env (same token you use elsewhere).
+ */
+async function gh(
+  path: string,
+  init: RequestInit & { base?: string } = {}
+): Promise<Response> {
+  const base = init.base ?? "https://api.github.com";
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (!token) throw new Error("GH_TOKEN is required for notify/remediate mode");
 
-function bodyForIssue(d: Detection) {
-  return `Hi — automated security scanner (non-malicious) detected an exposed API key pattern in this repository.\n\n` +
-    `**File:** ${d.path} (line ${d.lineNumber})\n` +
-    `**Snippet (redacted):** \`${d.redacted}\`\n` +
-    `**Link:** ${d.url}\n\n` +
-    `**Recommended actions:**\n` +
-    `1. Rotate/revoke the key in your OpenAI dashboard.\n` +
-    `2. Remove the key from this repository.\n` +
-    `3. Purge from Git history (git filter-repo / BFG).\n` +
-    `4. Use a secrets manager; enable GitHub Secret Scanning + push protection.\n\n` +
-    `This is an automated, non-malicious notice. Reply to opt-out and we'll exclude this repo.`;
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "openai-key-guardian",
+    Authorization: `Bearer ${token}`,
+  };
+
+  // merge headers
+  init.headers = { ...headers, ...(init.headers as Record<string, string>) };
+  return fetch(`${base}${path}`, init);
 }
 
-async function cooldownOkay(octokit: ReturnType<typeof getOctokit>, owner: string, repo: string) {
-  const sinceISO = new Date(Date.now() - COOLDOWN_DAYS * 86400_000).toISOString();
-  const list = await octokit.request("GET /repos/{owner}/{repo}/issues", { owner, repo, state: "all", per_page: 50, since: sinceISO });
-  return !list.data.some((i: { title: string }) => i.title === ISSUE_TITLE);
+const ISSUE_TITLE =
+  "Security: Exposed API key detected — please rotate immediately";
+
+function issueBody(d: Detection) {
+  return [
+    `We detected a likely exposed API key in this repository.`,
+    ``,
+    `**File**: \`${d.path}\``,
+    `**Line**: ${d.lineNumber}`,
+    `**Snippet** (redacted):`,
+    "```text",
+    d.redacted,
+    "```",
+    ``,
+    `### What to do`,
+    `1) Rotate the exposed key immediately with your provider.`,
+    `2) Remove the secret from git history (BFG / git filter-repo) and move secrets to a manager.`,
+    ``,
+    `If this is a false positive, reply **opt-out** and we'll exclude this repo from future scans.`,
+  ].join("\n");
 }
 
-export async function runRemediator() {
-  const octokit = getOctokit();
-  const detections = readRecent(50);
+export default async function runRemediation() {
+  const { RUN_MODE, ALLOW_WRITES, COOLDOWN_DAYS } = getPolicy();
 
-  if (RUN_MODE === "safe") {
-    console.log("RUN_MODE=safe — no writes");
-    return;
+  if (RUN_MODE !== "notify" && RUN_MODE !== "remediate") {
+    return { ok: true, skipped: "RUN_MODE is safe; nothing to write" };
   }
   if (!ALLOW_WRITES) {
-    console.log("ALLOW_WRITES=false — refusing to write");
-    return;
+    return { ok: false, message: "ALLOW_WRITES=false; refusing to create Issues/PRs" };
   }
 
+  const cooldownDays = Number.isFinite(COOLDOWN_DAYS) ? COOLDOWN_DAYS! : 7;
+  const since = new Date();
+  since.setDate(since.getDate() - cooldownDays);
+  const sinceIso = since.toISOString();
+
+  const detections: Detection[] = readRecent(200);
+
+  let created = 0;
   for (const d of detections) {
-    const [owner, repo] = d.repo.split("/");
-    if (!(await cooldownOkay(octokit, owner, repo))) {
-      console.log(`cooldown active for ${d.repo}`);
-      continue;
-    }
+    try {
+      const [owner, repo] = d.repo.split("/");
+      if (!owner || !repo) continue;
 
-    if (RUN_MODE === "notify") {
-      // open an Issue
-      const res = await octokit.request("POST /repos/{owner}/{repo}/issues", {
-        owner, repo,
-        title: ISSUE_TITLE,
-        body: bodyForIssue(d)
+      // De-dupe: search for an Issue with same title in the cooldown window
+      const q = `repo:${owner}/${repo} in:title "${ISSUE_TITLE}" created:>=${sinceIso}`;
+      const searchRes = await gh(
+        `/search/issues?q=${encodeURIComponent(q)}&per_page=1`,
+        { method: "GET" }
+      );
+      if (!searchRes.ok) {
+        // Soft-fail on search; continue to next repo
+        continue;
+      }
+      const search = (await searchRes.json()) as { total_count?: number };
+      if ((search.total_count ?? 0) > 0) {
+        continue;
+      }
+
+      // Create the Issue
+      const createRes = await gh(`/repos/${owner}/${repo}/issues`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: ISSUE_TITLE,
+          body: issueBody(d),
+        }),
       });
-      console.log("issue #", res.data.number, "created for", d.repo);
-      incrementRemediated();
-      await new Promise(r => setTimeout(r, 1500));
+      if (createRes.ok) {
+        incrementRemediated();
+        created += 1;
+      }
+      // if not ok, ignore and continue (permissions, archived, etc.)
+    } catch {
+      // ignore individual repo errors; move on
       continue;
-    }
-
-    if (RUN_MODE === "remediate") {
-      // (Optional) implement fork+PR flow here if desired; default disabled for v0.1
-      console.log("remediate mode: implement fork+PR in a later version");
     }
   }
-}
 
-if (process.argv[1]?.endsWith("remediate.ts")) {
-  runRemediator().catch(err => { console.error(err); process.exit(1); });
+  return { ok: true, created };
 }
-
